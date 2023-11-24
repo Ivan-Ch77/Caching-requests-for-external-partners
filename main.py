@@ -27,29 +27,35 @@ class ProxyRequest(BaseModel):
 
 @app.api_route("/proxy/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_request(request: Request):
+    '''
+    Представление для кэширования ответов на http запросы
+
+    '''
     try:
-        body = await request.json() if request.method != "GET" else None
-        method = request.method
-        url = request.query_params.get("url")  # Получаем URL из параметров запроса
+        method = request.method                                                                                         # Получаем метод запроса
+        if method != "GET":
+            body = await request.json()                                                                                 # Получаем тело запроса, если это не GET-запрос
+        else:
+            body = None                                                                                                 # Иначе присваиваем null значение
+        url = request.query_params.get("url")                                                                           # Получаем URL из параметров запроса
 
         # Создаем ключ кэша
-        cache_key = json.dumps({"method": method, "url": url, "body": body})
+        key = json.dumps({"method": method, "url": url, "body": body})
 
-        # Проверяем, есть ли ответ в кэше
-        cached_response = cache.get(cache_key)
-        if cached_response:
-            return json.loads(cached_response)
+        # По созданному ключу проверяем, есть ли ответ в кэше
+        response = cache.get(key)
+        if response:
+            return json.loads(response)
 
         # Если нет, делаем запрос
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.request(method, url, json=body)
-                cache.set(cache_key, json.dumps(response.json()))
+                response = await client.request(method, url, json=body)                                                 # Получаем ответ по запросу
+                cache.set(key, json.dumps(response.json()))                                                             # Сохраняем ответ по ключу
                 return response.json()
             except httpx.HTTPStatusError as e:
-                # Сохраняем ошибку в кэше
-                error_response = {"status_code": e.response.status_code, "detail": str(e)}
-                cache.set(cache_key, json.dumps(error_response))
+                error_response = {"status_code": e.response.status_code, "detail": str(e)}                              # Сохраняем ошибку в кэше
+                cache.set(key, json.dumps(error_response))
                 return error_response
     except Exception as e:
         logger.error(f"Ошибка при обработке запроса: {e}")
@@ -57,8 +63,12 @@ async def proxy_request(request: Request):
 
 @app.get("/cached-requests/")
 async def get_cached_requests():
+    '''
+    Представление для получения всех сохраненных http запросов
+    :return:
+    '''
     keys = cache.keys("*")
-    cached_requests = {}
+    requests = {}
     for key in keys:
-        cached_requests[key.decode("utf-8")] = json.loads(cache.get(key))
-    return cached_requests
+        requests[key.decode("utf-8")] = json.loads(cache.get(key))
+    return requests
