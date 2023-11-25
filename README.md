@@ -1,7 +1,28 @@
-* For Running Redis:
+## Запуск Redis в Docker-контейнере:
 
 `docker run --name redis -p 6379:6379 -d redis`
 
-* To start FastAPI server:
+## Запуск FastAPI-сервера:
 
 `uvicorn main:app --reload`
+
+## Настройка Прокси-Сервера в Postman
+
+### Шаг 1: Открыть Настройки Postman
+
+Запустите Postman и перейдите в настройки, нажав на иконку шестеренки в правом верхнем углу или выбрав "Settings" из меню, которое открывается при нажатии на ваш аватар.
+
+### Шаг 2: Перейти в Раздел Proxy
+
+В окне настроек откройте вкладку "Proxy"
+
+### Шаг 2: Включите "Use custom proxy configuration"
+
+В окне настроек откройте вкладку "Proxy", отключите "Use system proxy" и нажмите на тумблер "Use custom proxy configuration"
+
+### Шаг 4: Настройка Прокси-Сервера
+
+- Введите адрес вашего прокси-сервера в поле "Proxy Server URL".
+- Укажите порт прокси-сервера в поле "Proxy Port".
+
+#### Не забудьте потом отключить "Use custom proxy configuration", если в нем больше нет необходиомсти
