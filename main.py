@@ -1,7 +1,6 @@
 import uuid
-
 import aioredis
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 import httpx
 import json
 import logging
@@ -9,7 +8,6 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from urllib.parse import urlparse
 import xmltodict
-import hashlib
 
 app = FastAPI()
 
@@ -39,7 +37,7 @@ def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
 
     key_data = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
     # Хеширование ключа
-    return hashlib.sha256(key_data.encode()).hexdigest()
+    return key_data
 
 # Урлы партнеров имени
 urls = {
@@ -140,18 +138,41 @@ async def reset_cache():
         await redis.close()
 
 
-# @app.api_route("/reset-cache/{subdomain}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-# async def reset_cache_for_subdomain(subdomain: str):
-#     redis = await get_redis()
-#     try:
-#         keys = await redis.keys("*")
-#         for key in keys:
-#             key_str = key.decode("utf-8")
-#             if json.loads(key_str).get("subdomain") == subdomain:
-#                 await redis.delete(key)
-#         return {"status": f"Cache reset successfully for subdomain: {subdomain}"}
-#     except Exception as e:
-#         logger.error(f"Ошибка при сбросе кэша для поддомена {subdomain}: {e}")
-#         raise HTTPException(status_code=500, detail="Internal Server Error")
-#     finally:
-#         await redis.close()
+@app.api_route("/clear-cache/{domain}", methods=["GET", "DELETE"])
+async def clear_partner_cache(domain: str):
+    redis = await get_redis()
+    try:
+        keys = await redis.keys("*")
+        for key in keys:
+            key = key.decode('utf-8')
+            key_json = json.loads(key)
+            if domain == key_json['subdomain']:
+                await redis.delete(key)
+        return {"message": f"Cache for partner domain '{domain}' cleared successfully"}
+    except Exception as e:
+        logger.error(f"Error while clearing cache for partner domain '{domain}': {e}")
+        return {"error": f"Internal server error while clearing cache for partner domain '{domain}'"}
+    finally:
+        await redis.close()
+
+
+@app.post("/payment-callback/")
+async def payment_callback(callback_data: dict = Body(...)):
+    payment_id = callback_data.get("id")
+    payment_status = callback_data.get("status")
+
+    redis = await get_redis()
+    try:
+        # Получаем текущее значение по ключу
+        current_value = await redis.get(payment_id)
+        if current_value is None:
+            raise HTTPException(status_code=404, detail="Payment not found")
+
+        # Обновляем значение
+        current_data = json.loads(current_value)
+        current_data['status'] = payment_status  # Обновляем статус
+        await redis.set(payment_id, json.dumps(current_data))
+    finally:
+        await redis.close()
+
+    return {"status": "success", "message": f"Payment {payment_id} updated to {payment_status}"}
