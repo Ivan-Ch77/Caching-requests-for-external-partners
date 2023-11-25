@@ -13,7 +13,7 @@
         {% for request in requests %}
         <tr>
             <td>{{ request.key }}</td>
-            <td>{{ request.response | tojson }}</td>
+            <td>{{ request.response }}</td>
         </tr>
         {% endfor %}
     </table>

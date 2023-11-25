@@ -1,13 +1,15 @@
+import uuid
+
 import aioredis
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 import httpx
 import json
 import logging
-import os
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from urllib.parse import urlparse
 import xmltodict
+import hashlib
 
 app = FastAPI()
 
@@ -29,8 +31,25 @@ def extract_subdomain(url: str) -> str:
     subdomain = path.split('/')[1] if path.startswith('/') else path.split('/')[0]
     return subdomain
 
-@app.api_route("/proxy/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_request(request: Request):
+
+def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
+    # Игнорирование изменяемых полей ('salt')
+    if body and 'salt' in body:
+        body = {k: v for k, v in body.items() if k != 'salt'}
+
+    key_data = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
+    # Хеширование ключа
+    return hashlib.sha256(key_data.encode()).hexdigest()
+
+# Урлы партнеров имени
+urls = {
+    "visa": "https://qiwi-hackathon.free.beeceptor.com/visa",
+    "master": lambda: f"https://qiwi-hackathon.free.beeceptor.com/master/{uuid.uuid4()}"
+}
+
+
+@app.api_route("/proxy/{subdomain}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_request(request: Request, subdomain: str):
     # Подключение к Redis
     redis = await get_redis()
     try:
@@ -47,11 +66,16 @@ async def proxy_request(request: Request):
                 body = None
         else:
             body = None
-        url = request.query_params.get("url")
-        # Извлекаем поддомен
-        subdomain = extract_subdomain(str(url))
 
-        key = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
+        # Проверка наличия поддомена в словаре перенаправлений
+        if subdomain not in urls:
+            raise HTTPException(status_code=404, detail=f"URL для поддомена '{subdomain}' не найден")
+
+        # Получение URL для перенаправления
+        url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
+
+        # Создание ключа кэша
+        key = create_cache_key(method, url, body, subdomain)
 
         cached_response = await redis.get(key)
         if cached_response:
@@ -87,21 +111,47 @@ async def get_cached_requests(request: Request):
     redis = await get_redis()
     keys = await redis.keys("*")
     requests = []
-    cached_response = await redis.get(keys[-1])
-    print(cached_response)
     for key in keys:
         cached_response = await redis.get(key)
-        if b'xml' in cached_response:
-            requests.append({
-                "key": key,
-                "response": cached_response
-            })
-        else:
-            requests.append({
-                "key": key.decode("utf-8"),
-                "response": json.loads(cached_response)
-            })
+        try:
+            # Пытаемся декодировать как JSON
+            response_data = json.loads(cached_response)
+        except json.JSONDecodeError:
+            # Если не получается, предполагаем, что это текст или XML
+            response_data = cached_response.decode("utf-8")
+
+        requests.append({
+            "key": key.decode("utf-8"),
+            "response": response_data
+        })
     # Отправляем данные в шаблон и возвращаем HTML-ответ
     return templates.TemplateResponse("cached_requests.html", {"request": request, "requests": requests})
 
+@app.api_route("/reset-cache/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def reset_cache():
+    redis = await get_redis()
+    try:
+        await redis.flushdb()
+        return {"status": "Cache reset successfully"}
+    except Exception as e:
+        logger.error(f"Ошибка при сбросе кэша: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        await redis.close()
 
+
+# @app.api_route("/reset-cache/{subdomain}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+# async def reset_cache_for_subdomain(subdomain: str):
+#     redis = await get_redis()
+#     try:
+#         keys = await redis.keys("*")
+#         for key in keys:
+#             key_str = key.decode("utf-8")
+#             if json.loads(key_str).get("subdomain") == subdomain:
+#                 await redis.delete(key)
+#         return {"status": f"Cache reset successfully for subdomain: {subdomain}"}
+#     except Exception as e:
+#         logger.error(f"Ошибка при сбросе кэша для поддомена {subdomain}: {e}")
+#         raise HTTPException(status_code=500, detail="Internal Server Error")
+#     finally:
+#         await redis.close()
