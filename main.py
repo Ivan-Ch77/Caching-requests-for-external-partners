@@ -1,74 +1,82 @@
-import redis
+import aioredis
 from fastapi import FastAPI, Request
-from pydantic import BaseModel, HttpUrl
 import httpx
 import json
 import logging
 import os
+from fastapi.templating import Jinja2Templates
+from starlette.responses import HTMLResponse
+from urllib.parse import urlparse
 
-from starlette.responses import JSONResponse
+
+app = FastAPI()
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Подключение к Redis
-redis_host = os.getenv("REDIS_HOST", "localhost")
-redis_port = os.getenv("REDIS_PORT", 6379)
-redis_db = os.getenv("REDIS_DB", 0)
-cache = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
+# Настройка Jinja2
+templates = Jinja2Templates(directory="templates")
 
-app = FastAPI()
+# Установка соединения с Redis
+async def get_redis():
+    return await aioredis.from_url('redis://localhost:6379')
 
-class ProxyRequest(BaseModel):
-    url: HttpUrl
-    method: str
-    body: dict = None
+def extract_subdomain(url: str) -> str:
+    parsed_url = urlparse(url)
+    path = parsed_url.path
+    # Разделяем путь на части и берем первую часть после основного домена
+    subdomain = path.split('/')[1] if path.startswith('/') else path.split('/')[0]
+    return subdomain
 
 @app.api_route("/proxy/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_request(request: Request):
-    '''
-    Представление для кэширования ответов на http запросы
-
-    '''
+    # Подключение к Redis
+    redis = await get_redis()
     try:
-        method = request.method                                                                                         # Получаем метод запроса
+        method = request.method
         if method != "GET":
-            body = await request.json()                                                                                 # Получаем тело запроса, если это не GET-запрос
+            body = await request.json()
         else:
-            body = None                                                                                                 # Иначе присваиваем null значение
-        url = request.query_params.get("url")                                                                           # Получаем URL из параметров запроса
+            body = None
+        url = request.query_params.get("url")
+        # Извлекаем поддомен
+        subdomain = extract_subdomain(str(url))
 
-        # Создаем ключ кэша
-        key = json.dumps({"method": method, "url": url, "body": body})
+        key = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
 
-        # По созданному ключу проверяем, есть ли ответ в кэше
-        response = cache.get(key)
-        if response:
-            return json.loads(response)
+        cached_response = await redis.get(key)
+        if cached_response:
+            return json.loads(cached_response)
 
-        # Если нет, делаем запрос
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.request(method, url, json=body)                                                 # Получаем ответ по запросу
-                cache.set(key, json.dumps(response.json()))                                                             # Сохраняем ответ по ключу
+                response = await client.request(method, url, json=body)
+                await redis.set(key, json.dumps(response.json()))
                 return response.json()
             except httpx.HTTPStatusError as e:
-                error_response = {"status_code": e.response.status_code, "detail": str(e)}                              # Сохраняем ошибку в кэше
-                cache.set(key, json.dumps(error_response))
+                error_response = {"status_code": e.response.status_code, "detail": str(e)}
+                await redis.set(key, json.dumps(error_response))
                 return error_response
     except Exception as e:
         logger.error(f"Ошибка при обработке запроса: {e}")
         return {"error": "Внутренняя ошибка сервера"}
+    finally:
+        # Закрываем соединение с Redis
+        await redis.close()
 
-@app.get("/cached-requests/")
-async def get_cached_requests():
-    '''
-    Представление для получения всех сохраненных http запросов
-    :return:
-    '''
-    keys = cache.keys("*")
-    requests = {}
+@app.get("/cached-requests/", response_class=HTMLResponse)
+async def get_cached_requests(request: Request):
+    redis = await get_redis()
+    keys = await redis.keys("*")
+    requests = []
     for key in keys:
-        requests[key.decode("utf-8")] = json.loads(cache.get(key))
-    return requests
+        cached_response = await redis.get(key)
+        requests.append({
+            "key": key.decode("utf-8"),
+            "response": json.loads(cached_response)
+        })
+    # Отправляем данные в шаблон и возвращаем HTML-ответ
+    return templates.TemplateResponse("cached_requests.html", {"request": request, "requests": requests})
+
+

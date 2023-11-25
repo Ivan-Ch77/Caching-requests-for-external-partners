@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cached Requests</title>
+</head>
+<body>
+    <h1>Cached Requests</h1>
+    <table border="1">
+        <tr>
+            <th>Key</th>
+            <th>Response</th>
+        </tr>
+        {% for request in requests %}
+        <tr>
+            <td>{{ request.key }}</td>
+            <td>{{ request.response | tojson }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
