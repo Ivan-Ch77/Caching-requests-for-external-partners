@@ -1,3 +1,4 @@
+import os
 import uuid
 import aioredis
 from fastapi import FastAPI, Request, HTTPException, Body
@@ -30,20 +31,36 @@ def extract_subdomain(url: str) -> str:
     return subdomain
 
 
-def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
-    # Игнорирование изменяемых полей ('salt')
-    if body and 'salt' in body:
-        body = {k: v for k, v in body.items() if k != 'salt'}
+# Функция для загрузки данных из файла partners_info.json, если он существует
+def load_partners_info():
+    file_name = "partners_info.json"
+    if os.path.exists(file_name):
+        with open(file_name, "r") as file:
+            return json.load(file)
+    return {}
 
+
+# Функция для сохранения данных в файл partners_info.json
+def save_partners_info(data):
+    file_name = "partners_info.json"
+    with open(file_name, "w") as file:
+        json.dump(data, file, indent=4)
+
+
+def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
+    ignore_fields = partners_info[subdomain].get("ignore_fields", [])
+    if body:
+        body = {k: v for k, v in body.items() if k not in ignore_fields}
     key_data = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
-    # Хеширование ключа
     return key_data
 
+
 # Урлы партнеров имени
-urls = {
-    "visa": "https://qiwi-hackathon.free.beeceptor.com/visa",
-    "master": lambda: f"https://qiwi-hackathon.free.beeceptor.com/master/{uuid.uuid4()}"
-}
+# partners_info = {
+#     "visa": {"url": "https://hackaton.free.beeceptor.com/visa", "ignore_fields": ["salt", "id"]},
+#     "master": {"url": lambda: f"https://hackaton.free.beeceptor.com/master/{uuid.uuid4()}", "ignore_fields": ["salt"]}
+# }
+partners_info = dict(load_partners_info())
 
 
 @app.api_route("/proxy/{subdomain}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -66,11 +83,13 @@ async def proxy_request(request: Request, subdomain: str):
             body = None
 
         # Проверка наличия поддомена в словаре перенаправлений
-        if subdomain not in urls:
-            raise HTTPException(status_code=404, detail=f"URL для поддомена '{subdomain}' не найден")
+        if subdomain not in partners_info:
+            raise HTTPException(status_code=404, detail=f"URL for subdomain '{subdomain}' not found")
 
         # Получение URL для перенаправления
-        url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
+        # url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
+        partner_data = partners_info[subdomain]
+        url = partner_data["url"]() if callable(partner_data["url"]) else partner_data["url"]
 
         # Создание ключа кэша
         key = create_cache_key(method, url, body, subdomain)
@@ -92,7 +111,6 @@ async def proxy_request(request: Request, subdomain: str):
                 else:
                     response = await client.request(method, url)
 
-
             except httpx.HTTPStatusError as e:
                 error_response = {"status_code": e.response.status_code, "detail": str(e)}
                 await redis.set(key, json.dumps(error_response))
@@ -103,6 +121,7 @@ async def proxy_request(request: Request, subdomain: str):
     finally:
         # Закрываем соединение с Redis
         await redis.close()
+
 
 @app.get("/cached-requests/", response_class=HTMLResponse)
 async def get_cached_requests(request: Request):
@@ -124,6 +143,7 @@ async def get_cached_requests(request: Request):
         })
     # Отправляем данные в шаблон и возвращаем HTML-ответ
     return templates.TemplateResponse("cached_requests.html", {"request": request, "requests": requests})
+
 
 @app.api_route("/reset-cache/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def reset_cache():
@@ -155,24 +175,65 @@ async def clear_partner_cache(domain: str):
     finally:
         await redis.close()
 
+#
+# @app.post("/payment-callback/")
+# async def payment_callback(callback_data: dict = Body(...)):
+#     payment_id = callback_data.get("id")
+#     payment_status = callback_data.get("status")
+#
+#     redis = await get_redis()
+#     try:
+#         # Получаем текущее значение по ключу
+#         current_value = await redis.get(payment_id)
+#         if current_value is None:
+#             raise HTTPException(status_code=404, detail="Payment not found")
+#
+#         # Обновляем значение
+#         current_data = json.loads(current_value)
+#         current_data['status'] = payment_status  # Обновляем статус
+#         await redis.set(payment_id, json.dumps(current_data))
+#     finally:
+#         await redis.close()
+#
+#     return {"status": "success", "message": f"Payment {payment_id} updated to {payment_status}"}
 
-@app.post("/payment-callback/")
-async def payment_callback(callback_data: dict = Body(...)):
-    payment_id = callback_data.get("id")
-    payment_status = callback_data.get("status")
 
-    redis = await get_redis()
+@app.get("/partners", response_class=HTMLResponse)
+async def read_partners(request: Request):
+    partners_data = load_partners_info()
+    return templates.TemplateResponse("partners_page.html", {"request": request, "partners_data": partners_data})
+
+@app.get("/get-partners")
+async def get_partners():
+    partners_data = load_partners_info()  # Загрузка информации о партнерах из файла
+    return partners_data
+
+@app.post("/add-partner")
+async def add_partner(partner_data: dict = Body(...)):
+    partner_name = partner_data.get("name")
+    partner_url = partner_data.get("url")
+    ignore_fields = partner_data.get("ignore_fields", [])
+
+    if partner_name in partners_info:
+        raise HTTPException(status_code=400, detail=f"Partner '{partner_name}' already exists")
+
+    partners_info[partner_name] = {"url": partner_url, "ignore_fields": ignore_fields}
+
+    # Сохранение обновленных данных в файл после добавления партнера
+    save_partners_info(partners_info)
+
+    return {"status": "success", "message": f"Partner '{partner_name}' added successfully"}
+
+
+@app.api_route("/delete-partner/{partner_name}", methods=["GET", "DELETE"])
+async def del_partner(partner_name: str):
     try:
-        # Получаем текущее значение по ключу
-        current_value = await redis.get(payment_id)
-        if current_value is None:
-            raise HTTPException(status_code=404, detail="Payment not found")
-
-        # Обновляем значение
-        current_data = json.loads(current_value)
-        current_data['status'] = payment_status  # Обновляем статус
-        await redis.set(payment_id, json.dumps(current_data))
-    finally:
-        await redis.close()
-
-    return {"status": "success", "message": f"Payment {payment_id} updated to {payment_status}"}
+        if partner_name in partners_info:
+            del partners_info[partner_name]
+            save_partners_info(partners_info)  # Сохранение обновленных данных в файл
+            return {"status": "success", "message": f"Partner '{partner_name}' deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail=f"Partner '{partner_name}' not found")
+    except Exception as e:
+        logger.error(f"Error while deleting partner '{partner_name}': {e}")
+        return {"error": f"Internal server error while deleting partner '{partner_name}'"}
