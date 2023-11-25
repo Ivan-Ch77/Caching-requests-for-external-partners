@@ -31,18 +31,16 @@ def extract_subdomain(url: str) -> str:
 
 
 def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
-    # Игнорирование изменяемых полей ('salt')
-    if body and 'salt' in body:
-        body = {k: v for k, v in body.items() if k != 'salt'}
-
+    ignore_fields = partners_info[subdomain].get("ignore_fields", [])
+    if body:
+        body = {k: v for k, v in body.items() if k not in ignore_fields}
     key_data = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
-    # Хеширование ключа
     return key_data
 
 # Урлы партнеров имени
-urls = {
-    "visa": "https://qiwi-hackathon.free.beeceptor.com/visa",
-    "master": lambda: f"https://qiwi-hackathon.free.beeceptor.com/master/{uuid.uuid4()}"
+partners_info = {
+    "visa": {"url": "https://qiwi-hackathon.free.beeceptor.com/visa", "ignore_fields": ["salt", "id"]},
+    "master": {"url": lambda: f"https://qiwi-hackathon.free.beeceptor.com/master/{uuid.uuid4()}", "ignore_fields": ["salt"]}
 }
 
 
@@ -66,11 +64,12 @@ async def proxy_request(request: Request, subdomain: str):
             body = None
 
         # Проверка наличия поддомена в словаре перенаправлений
-        if subdomain not in urls:
-            raise HTTPException(status_code=404, detail=f"URL для поддомена '{subdomain}' не найден")
+        if subdomain not in partners_info:
+            raise HTTPException(status_code=404, detail=f"URL for subdomain '{subdomain}' not found")
 
         # Получение URL для перенаправления
-        url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
+        partner_data = partners_info[subdomain]
+        url = partner_data["url"]() if callable(partner_data["url"]) else partner_data["url"]
 
         # Создание ключа кэша
         key = create_cache_key(method, url, body, subdomain)
@@ -176,3 +175,16 @@ async def payment_callback(callback_data: dict = Body(...)):
         await redis.close()
 
     return {"status": "success", "message": f"Payment {payment_id} updated to {payment_status}"}
+
+@app.post("/add-partner/")
+async def add_partner(partner_data: dict = Body(...)):
+    partner_name = partner_data.get("name")
+    partner_url = partner_data.get("url")
+    ignore_fields = partner_data.get("ignore_fields", [])
+
+    if partner_name in partners_info:
+        raise HTTPException(status_code=400, detail=f"Partner '{partner_name}' already exists")
+
+    partners_info[partner_name] = {"url": partner_url, "ignore_fields": ignore_fields}
+
+    return {"status": "success", "message": f"Partner '{partner_name}' added successfully"}
