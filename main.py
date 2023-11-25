@@ -5,9 +5,9 @@ import json
 import logging
 import os
 from fastapi.templating import Jinja2Templates
-from starlette.responses import HTMLResponse
+from fastapi.responses import HTMLResponse
 from urllib.parse import urlparse
-
+import xmltodict
 
 app = FastAPI()
 
@@ -35,8 +35,16 @@ async def proxy_request(request: Request):
     redis = await get_redis()
     try:
         method = request.method
+        content_type = request.headers.get('Content-Type')
         if method != "GET":
-            body = await request.json()
+            if content_type == "application/json":
+                body = await request.json()
+            elif content_type == "application/xml":
+                body = await request.body()
+                body = xmltodict.parse(body.decode("utf-8"))
+            else:
+                # Другие типы
+                body = None
         else:
             body = None
         url = request.query_params.get("url")
@@ -51,9 +59,18 @@ async def proxy_request(request: Request):
 
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.request(method, url, json=body)
-                await redis.set(key, json.dumps(response.json()))
-                return response.json()
+                if content_type == "application/json":
+                    response = await client.request(method, url, json=body)
+                    await redis.set(key, json.dumps(response.json()))
+                    return response.json()
+                elif content_type == "application/xml":
+                    response = await client.request(method, url, data=xmltodict.unparse(body))
+                    await redis.set(key, response.text)
+                    return response.text
+                else:
+                    response = await client.request(method, url)
+
+
             except httpx.HTTPStatusError as e:
                 error_response = {"status_code": e.response.status_code, "detail": str(e)}
                 await redis.set(key, json.dumps(error_response))
@@ -70,12 +87,20 @@ async def get_cached_requests(request: Request):
     redis = await get_redis()
     keys = await redis.keys("*")
     requests = []
+    cached_response = await redis.get(keys[-1])
+    print(cached_response)
     for key in keys:
         cached_response = await redis.get(key)
-        requests.append({
-            "key": key.decode("utf-8"),
-            "response": json.loads(cached_response)
-        })
+        if b'xml' in cached_response:
+            requests.append({
+                "key": key,
+                "response": cached_response
+            })
+        else:
+            requests.append({
+                "key": key.decode("utf-8"),
+                "response": json.loads(cached_response)
+            })
     # Отправляем данные в шаблон и возвращаем HTML-ответ
     return templates.TemplateResponse("cached_requests.html", {"request": request, "requests": requests})
 
