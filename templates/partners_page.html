@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Partners Management</title>
+</head>
+<body>
+    <h1>Partners</h1>
+
+    <!-- Form to add a new partner -->
+    <form id="addPartnerForm">
+        <label for="partnerName">Partner Name:</label>
+        <input type="text" id="partnerName" name="name" required>
+        <label for="partnerURL">Partner URL:</label>
+        <input type="text" id="partnerURL" name="url" required>
+        <label for="ignoreField">Ignore Field(s):</label>
+        <input type="text" id="ignoreField" name="ignore_field">
+        <input type="submit" value="Add Partner">
+    </form>
+
+    <!-- Display the list of partners -->
+    <ul id="partnersList">
+        <!-- Partners will be dynamically populated here -->
+    </ul>
+
+    <script>
+        async function getPartners() {
+            try {
+                const response = await fetch('/get-partners'); // Endpoint to get partners list
+                const data = await response.json();
+                const partnersList = document.getElementById('partnersList');
+                partnersList.innerHTML = '';
+
+                for (const partner in data) {
+                    const partnerData = data[partner];
+                    const listItem = document.createElement('li');
+                    const ignoreFields = Array.isArray(partnerData.ignore_fields)
+                        ? partnerData.ignore_fields.join(', ')
+                        : partnerData.ignore_fields;
+
+                    listItem.innerHTML = `${partner} - URL: ${partnerData.url} - Ignore Fields: ${ignoreFields}`;
+
+                    const deleteButton = document.createElement('button');
+                    deleteButton.textContent = 'Delete';
+                    deleteButton.addEventListener('click', async () => {
+                        const confirmation = confirm(`Are you sure you want to delete ${partner}?`);
+                        if (confirmation) {
+                            await deletePartner(partner);
+                        }
+                    });
+
+                    listItem.appendChild(deleteButton);
+                    partnersList.appendChild(listItem);
+                }
+            } catch (error) {
+                console.error("Error fetching partners:", error);
+            }
+        }
+
+        async function addPartner(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const partnerData = {};
+
+            formData.forEach((value, key) => {
+                partnerData[key] = value;
+            });
+
+            // Разделяем строку с игнорируемыми полями по запятой и удаляем лишние пробелы
+            const ignoreField = formData.get('ignore_field');
+            if (ignoreField) {
+                const ignoreFieldsArray = ignoreField.split(',').map(field => field.trim());
+                partnerData['ignore_fields'] = ignoreFieldsArray;
+            }
+
+            try {
+                const response = await fetch('/add-partner/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(partnerData)
+                });
+
+                const result = await response.json();
+                alert(result.message);
+                getPartners(); // Обновить список партнеров
+            } catch (error) {
+                console.error("Error adding partner:", error);
+            }
+        }
+
+        async function deletePartner(partnerName) {
+            try {
+                const response = await fetch(`/delete-partner/${partnerName}`, {
+                    method: 'DELETE'
+                });
+
+                const result = await response.json();
+                alert(result.message);
+                getPartners(); // Refresh the partners list
+            } catch (error) {
+                console.error(`Error deleting ${partnerName}:`, error);
+            }
+        }
+
+        document.getElementById('addPartnerForm').addEventListener('submit', addPartner);
+        getPartners(); // Initially load partners when the page loads
+    </script>
+</body>
+</html>
