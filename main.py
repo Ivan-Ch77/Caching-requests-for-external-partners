@@ -119,7 +119,6 @@ async def proxy_request(request: Request, partner_name: str):
     #
     #     return random_regular
 
-
     # Подключение к Redis
     redis = await get_redis()
     try:
@@ -145,16 +144,17 @@ async def proxy_request(request: Request, partner_name: str):
         # url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
         partner_data = partners_info[partner_name]
         url = partner_data["url"]() if callable(partner_data["url"]) else partner_data["url"]
+        print(url)
         # Создание ключа кэша
         key = create_cache_key(method, url, body, partner_name)
 
         cached_response = await redis.get(key)
         if cached_response:
-            return json.loads(str(cached_response)[1:])
+            print(cached_response)
+            return json.loads(cached_response)
 
         async with httpx.AsyncClient() as client:
             try:
-                print(content_type)
                 if content_type == "application/json":
                     response = await client.request(method, url, json=body)
                     await redis.set(key, json.dumps(response.json()))
