@@ -43,7 +43,7 @@
 
 3. Очищение кэша тестовой среды партнера
    
-   Отправляем DELETE запрос на http://localhost:8000/get-partners/{partner_name} 
+   Отправляем DELETE запрос на http://localhost:8000/clear-cache/{partner_name}
    
 4. Удаление тестовой среды партнера 
 
