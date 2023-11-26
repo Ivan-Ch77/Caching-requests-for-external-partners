@@ -1,5 +1,10 @@
 import os
+import random
+import re
+import string
 import uuid
+from typing import Optional
+
 import aioredis
 from fastapi import FastAPI, Request, HTTPException, Body
 import httpx
@@ -81,6 +86,40 @@ partners_info = dict(load_partners_info())
 
 @app.api_route("/proxy/{partner_name}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_request(request: Request, partner_name: str):
+    # проверка, является ли pattern регулярным выражением (нужно для url)
+    # def is_regex_pattern(pattern):
+    #     regex_chars = "()[]{}+*^$\\"
+    #     for char in pattern:
+    #         if char in regex_chars:
+    #             return pattern.find(char)
+    #     return False
+    #
+    # def generate_random_value(regex_pattern):
+    #     # Пример регулярного выражения
+    #     # regex_pattern = r"example_regex_pattern"
+    #
+    #     # Ваша логика генерации случайного значения на основе регулярного выражения
+    #     random_regular = None
+    #
+    #     try:
+    #         # Пытаемся скомпилировать регулярное выражение
+    #         compiled_pattern = re.compile(regex_pattern)
+    #
+    #         # Генерируем случайное значение, соответствующее регулярному выражению
+    #         random_regular = ''.join(
+    #             random.choice(string.ascii_letters + string.digits) for _ in range(10))  # Пример случайного значения
+    #
+    #         # Проверяем, соответствует ли случайное значение регулярному выражению
+    #         while not compiled_pattern.match(random_regular):
+    #             random_regular = ''.join(random.choice(string.ascii_letters + string.digits) for _ in
+    #                                      range(10))  # Пример случайного значения
+    #
+    #     except re.error:
+    #         print("Ошибка в регулярном выражении")
+    #
+    #     return random_regular
+
+
     # Подключение к Redis
     redis = await get_redis()
     try:
@@ -100,28 +139,30 @@ async def proxy_request(request: Request, partner_name: str):
 
         # Проверка наличия поддомена в словаре перенаправлений
         if partner_name not in partners_info:
-            raise HTTPException(status_code=404, detail=f"URL for subdomain '{partner_name}' not found")
+            raise HTTPException(status_code=404, detail=f"URL for partner: '{partner_name}' not found")
 
         # Получение URL для перенаправления
         # url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
         partner_data = partners_info[partner_name]
         url = partner_data["url"]() if callable(partner_data["url"]) else partner_data["url"]
-
         # Создание ключа кэша
         key = create_cache_key(method, url, body, partner_name)
 
         cached_response = await redis.get(key)
         if cached_response:
-            return json.loads(cached_response)
+            return json.loads(str(cached_response)[1:])
 
         async with httpx.AsyncClient() as client:
             try:
+                print(content_type)
                 if content_type == "application/json":
                     response = await client.request(method, url, json=body)
                     await redis.set(key, json.dumps(response.json()))
                     return response.json()
                 elif content_type == "application/xml":
+                    print(body)
                     response = await client.request(method, url, data=xmltodict.unparse(body))
+                    print('response:', response)
                     await redis.set(key, response.text)
                     return response.text
                 else:
@@ -174,20 +215,20 @@ async def reset_cache():
         await redis.close()
 
 
-@app.api_route("/clear-cache/{domain}", methods=["GET", "DELETE"])
-async def clear_partner_cache(domain: str):
+@app.api_route("/clear-cache/{partner_name}", methods=["GET", "DELETE"])
+async def clear_partner_cache(partner_name: str):
     redis = await get_redis()
     try:
         keys = await redis.keys("*")
         for key in keys:
             key = key.decode('utf-8')
             key_json = json.loads(key)
-            if domain == key_json['subdomain']:
+            if partner_name == key_json['partner_name']:
                 await redis.delete(key)
-        return {"message": f"Cache for partner domain '{domain}' cleared successfully"}
+        return {"message": f"Cache for partner '{partner_name}' cleared successfully"}
     except Exception as e:
-        logger.error(f"Error while clearing cache for partner domain '{domain}': {e}")
-        return {"error": f"Internal server error while clearing cache for partner domain '{domain}'"}
+        logger.error(f"Error while clearing cache for partner '{partner_name}': {e}")
+        return {"error": f"Internal server error while clearing cache for partner '{partner_name}'"}
     finally:
         await redis.close()
 
