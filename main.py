@@ -23,12 +23,12 @@ templates = Jinja2Templates(directory="templates")
 async def get_redis():
     return await aioredis.from_url('redis://localhost:6379')
 
-def extract_subdomain(url: str) -> str:
-    parsed_url = urlparse(url)
-    path = parsed_url.path
-    # Разделяем путь на части и берем первую часть после основного домена
-    subdomain = path.split('/')[1] if path.startswith('/') else path.split('/')[0]
-    return subdomain
+# def extract_subdomain(url: str) -> str:
+#     parsed_url = urlparse(url)
+#     path = parsed_url.path
+#     # Разделяем путь на части и берем первую часть после основного домена
+#     subdomain = path.split('/')[1] if path.startswith('/') else path.split('/')[0]
+#     return subdomain
 
 
 # Функция для загрузки данных из файла partners_info.json, если он существует
@@ -47,13 +47,29 @@ def save_partners_info(data):
         json.dump(data, file, indent=4)
 
 
-def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
-    ignore_fields = partners_info[subdomain].get("ignore_fields", [])
-    if body:
-        body = {k: v for k, v in body.items() if k not in ignore_fields}
-    key_data = json.dumps({"method": method, "url": url, "body": body, "subdomain": subdomain})
-    return key_data
+def create_cache_key(method: str, url: str, body: dict, partner_name: str) -> str:
+    def process_request(partner_name, data):
+        if isinstance(data, dict):
+            ignore_fields = []
+            if partner_name in partners_info:
+                ignore_fields = partners_info[partner_name].get("ignore_fields", [])
 
+            return {
+                k: process_request(partner_name, v) if k not in ignore_fields else None
+                for k, v in data.items()
+            }
+        elif isinstance(data, list):
+            return [
+                process_request(partner_name, item)
+                for item in data
+            ]
+        else:
+            return data
+
+    body_processed = process_request(partner_name, body)
+    key_data = json.dumps({"method": method, "url": url, "body": body_processed, "partner_name": partner_name})
+    # Хеширование ключа
+    return key_data
 
 # Урлы партнеров имени
 # partners_info = {
@@ -63,8 +79,8 @@ def create_cache_key(method: str, url: str, body: dict, subdomain: str) -> str:
 partners_info = dict(load_partners_info())
 
 
-@app.api_route("/proxy/{subdomain}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_request(request: Request, subdomain: str):
+@app.api_route("/proxy/{partner_name}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_request(request: Request, partner_name: str):
     # Подключение к Redis
     redis = await get_redis()
     try:
@@ -83,16 +99,16 @@ async def proxy_request(request: Request, subdomain: str):
             body = None
 
         # Проверка наличия поддомена в словаре перенаправлений
-        if subdomain not in partners_info:
-            raise HTTPException(status_code=404, detail=f"URL for subdomain '{subdomain}' not found")
+        if partner_name not in partners_info:
+            raise HTTPException(status_code=404, detail=f"URL for subdomain '{partner_name}' not found")
 
         # Получение URL для перенаправления
         # url = urls[subdomain]() if callable(urls[subdomain]) else urls[subdomain]
-        partner_data = partners_info[subdomain]
+        partner_data = partners_info[partner_name]
         url = partner_data["url"]() if callable(partner_data["url"]) else partner_data["url"]
 
         # Создание ключа кэша
-        key = create_cache_key(method, url, body, subdomain)
+        key = create_cache_key(method, url, body, partner_name)
 
         cached_response = await redis.get(key)
         if cached_response:
